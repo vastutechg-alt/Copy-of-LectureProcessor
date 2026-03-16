@@ -85,7 +85,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
               setProject({
                 id: result.id,
                 originalName: result.originalName,
-                audioUrl: result.audioUrl,
+                audioUrl: (import.meta.env.VITE_APP_URL || '') + result.audioUrl,
                 audioFileName: result.audioFileName,
                 splits: [],
                 fullTranscript: null,
@@ -158,7 +158,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
             setProject({
               id: result.id,
               originalName: result.originalName,
-              audioUrl: result.audioUrl,
+              audioUrl: (import.meta.env.VITE_APP_URL || '') + result.audioUrl,
               audioFileName: result.audioFileName,
               splits: [],
               fullTranscript: null,

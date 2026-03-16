@@ -27,7 +27,11 @@ export default function ProcessingPage({ project, setProject, apiKey }: { projec
         audioFileName: project.audioFileName
       });
       if (response.data.status === 'success') {
-        setProject({ ...project, splits: response.data.parts });
+        const partsWithUrl = response.data.parts.map((p: any) => ({
+          ...p,
+          url: (import.meta.env.VITE_APP_URL || '') + p.url
+        }));
+        setProject({ ...project, splits: partsWithUrl });
       }
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to split audio');
