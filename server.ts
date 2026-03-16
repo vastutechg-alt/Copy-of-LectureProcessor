@@ -64,22 +64,38 @@ const processingStatus = new Map<string, any>();
 // 1. Upload Video Chunk
 app.post('/api/upload-chunk', upload.single('chunk'), (req, res) => {
   try {
-    const { fileId, chunkIndex } = req.body;
+    const { fileId, chunkIndex, originalName } = req.body;
     const chunkFile = req.file;
     
     if (!chunkFile) {
       return res.status(400).json({ error: 'No chunk uploaded' });
     }
 
-    const chunkDir = path.join(CHUNKS_DIR, fileId);
-    if (!fs.existsSync(chunkDir)) {
-      fs.mkdirSync(chunkDir, { recursive: true });
-    }
+    const ext = path.extname(originalName || '');
+    const finalVideoPath = path.join(VIDEOS_DIR, `${fileId}${ext}`);
 
-    const chunkPath = path.join(chunkDir, chunkIndex);
-    fs.renameSync(chunkFile.path, chunkPath);
+    // Append chunk to the final file using streams
+    const readStream = fs.createReadStream(chunkFile.path);
+    const writeStream = fs.createWriteStream(finalVideoPath, { flags: 'a' });
+    
+    readStream.pipe(writeStream);
+    
+    readStream.on('end', () => {
+      // Delete the temporary chunk file
+      fs.unlinkSync(chunkFile.path);
+      res.json({ status: 'success' });
+    });
+    
+    readStream.on('error', (err) => {
+      console.error('Stream read error:', err);
+      res.status(500).json({ error: 'Failed to process chunk' });
+    });
+    
+    writeStream.on('error', (err) => {
+      console.error('Stream write error:', err);
+      res.status(500).json({ error: 'Failed to process chunk' });
+    });
 
-    res.json({ status: 'success' });
   } catch (error) {
     console.error('Chunk upload error:', error);
     res.status(500).json({ error: 'Failed to upload chunk' });
@@ -95,48 +111,13 @@ app.post('/api/start-processing', async (req, res) => {
   }
 
   // Initialize status
-  processingStatus.set(fileId, { status: 'merging', progress: 0 });
+  processingStatus.set(fileId, { status: 'extracting', progress: 0 });
   res.json({ status: 'started', fileId });
 
   // Process in background
   try {
     const ext = path.extname(originalName);
     const finalVideoPath = path.join(VIDEOS_DIR, `${fileId}${ext}`);
-    const chunkDir = path.join(CHUNKS_DIR, fileId);
-
-    // Merge chunks using streams for better memory management
-    const writeStream = fs.createWriteStream(finalVideoPath);
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = path.join(chunkDir, String(i));
-      if (!fs.existsSync(chunkPath)) {
-        throw new Error(`Missing chunk ${i}`);
-      }
-      
-      await new Promise<void>((resolve, reject) => {
-        const readStream = fs.createReadStream(chunkPath);
-        readStream.pipe(writeStream, { end: false });
-        readStream.on('end', () => {
-          fs.unlinkSync(chunkPath);
-          resolve();
-        });
-        readStream.on('error', reject);
-      });
-    }
-    
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-      writeStream.end();
-    });
-    
-    // Ensure file is fully flushed to disk
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    if (fs.existsSync(chunkDir)) {
-      fs.rmdirSync(chunkDir);
-    }
-
-    processingStatus.set(fileId, { status: 'extracting', progress: 0 });
 
     const audioFileName = `${fileId}.mp3`;
     const audioPath = path.join(AUDIO_DIR, audioFileName);
@@ -170,6 +151,16 @@ app.post('/api/start-processing', async (req, res) => {
       })
       .on('end', () => {
         if (timeoutId) clearTimeout(timeoutId);
+        
+        // Delete the original video file to save memory
+        if (fs.existsSync(finalVideoPath)) {
+          try {
+            fs.unlinkSync(finalVideoPath);
+          } catch (e) {
+            console.error('Failed to delete original video:', e);
+          }
+        }
+
         processingStatus.set(fileId, {
           status: 'completed',
           result: {

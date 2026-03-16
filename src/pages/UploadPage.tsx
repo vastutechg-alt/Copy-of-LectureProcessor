@@ -110,7 +110,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
 
       // File upload logic
       const fileId = uuidv4();
-      const chunkSize = 10 * 1024 * 1024; // 10MB chunks
+      const chunkSize = 5 * 1024 * 1024; // 5MB chunks
       const totalChunks = Math.ceil(file!.size / chunkSize);
 
       // 1. Upload chunks
@@ -182,7 +182,8 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
 
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data?.error || 'An error occurred during upload and processing.');
+      const errorMsg = err.response?.data?.error || err.message || 'An error occurred during upload and processing.';
+      setError(errorMsg);
       setIsUploading(false);
     }
   };
