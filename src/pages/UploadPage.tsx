@@ -61,9 +61,11 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
     setStatusMessage(uploadMethod === 'url' ? 'Starting download...' : 'Uploading...');
     setError(null);
 
+    const baseUrl = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '');
+
     try {
       if (uploadMethod === 'url') {
-        const response = await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/process-url`, {
+        const response = await axios.post(`${baseUrl}/api/process-url`, {
           url: videoUrl,
           bitrate
         });
@@ -73,7 +75,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
         // Poll for status
         const pollInterval = setInterval(async () => {
           try {
-            const statusRes = await axios.get(`${import.meta.env.VITE_APP_URL || ''}/api/processing-status/${fileId}`);
+            const statusRes = await axios.get(`${baseUrl}/api/processing-status/${fileId}`);
             const { status, progress: procProgress, result, error: procError } = statusRes.data;
 
             if (status === 'error') {
@@ -85,7 +87,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
               setProject({
                 id: result.id,
                 originalName: result.originalName,
-                audioUrl: (import.meta.env.VITE_APP_URL || '') + result.audioUrl,
+                audioUrl: baseUrl + result.audioUrl,
                 audioFileName: result.audioFileName,
                 splits: [],
                 fullTranscript: null,
@@ -94,8 +96,16 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
               navigate('/process');
             } else {
               let msg = status === 'downloading' ? 'Downloading video...' : 'Extracting audio...';
-              if (status === 'extracting' && procProgress === 0 && statusRes.data.timemark) {
-                msg += ` (Processed: ${statusRes.data.timemark})`;
+              if (status === 'extracting' && procProgress === 0) {
+                if (statusRes.data.timemark) {
+                  msg += ` (Processed: ${statusRes.data.timemark})`;
+                } else if (statusRes.data.targetSize) {
+                  msg += ` (Extracted: ${Math.round(statusRes.data.targetSize / 1024)} MB)`;
+                } else if (statusRes.data.stderr) {
+                  // Show a small snippet of stderr to indicate activity
+                  const cleanStderr = statusRes.data.stderr.replace(/^frame=.*$/, 'Processing frames...').substring(0, 40);
+                  msg += ` (${cleanStderr}...)`;
+                }
               }
               setStatusMessage(msg);
               setProgress(procProgress || 0);
@@ -110,7 +120,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
 
       // File upload logic
       const fileId = uuidv4();
-      const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+      const chunkSize = 20 * 1024 * 1024; // 20MB chunks
       const totalChunks = Math.ceil(file!.size / chunkSize);
 
       // 1. Upload chunks
@@ -126,17 +136,34 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
         formData.append('totalChunks', String(totalChunks));
         formData.append('originalName', file!.name);
 
-        await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/upload-chunk`, formData);
-        
-        const percentCompleted = Math.round(((i + 1) / totalChunks) * 100);
-        setProgress(percentCompleted);
+        setStatusMessage(`Uploading part ${i + 1} of ${totalChunks}...`);
+
+        let retries = 3;
+        while (retries > 0) {
+          try {
+            await axios.post(`${baseUrl}/api/upload-chunk`, formData, {
+              onUploadProgress: (progressEvent) => {
+                if (progressEvent.total) {
+                  const chunkProgress = progressEvent.loaded / progressEvent.total;
+                  const overallProgress = Math.round(((i + chunkProgress) / totalChunks) * 100);
+                  setProgress(overallProgress);
+                }
+              }
+            });
+            break; // Success, exit retry loop
+          } catch (chunkErr) {
+            retries--;
+            if (retries === 0) throw chunkErr; // Rethrow if out of retries
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+          }
+        }
       }
 
       // 2. Start processing
       setStatusMessage('Merging and Extracting Audio...');
       setProgress(0);
       
-      await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/start-processing`, {
+      await axios.post(`${baseUrl}/api/start-processing`, {
         fileId,
         originalName: file!.name,
         totalChunks,
@@ -146,7 +173,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
       // 3. Poll for status
       const pollInterval = setInterval(async () => {
         try {
-          const statusRes = await axios.get(`${import.meta.env.VITE_APP_URL || ''}/api/processing-status/${fileId}`);
+          const statusRes = await axios.get(`${baseUrl}/api/processing-status/${fileId}`);
           const { status, progress: procProgress, result, error: procError } = statusRes.data;
 
           if (status === 'error') {
@@ -158,7 +185,7 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
             setProject({
               id: result.id,
               originalName: result.originalName,
-              audioUrl: (import.meta.env.VITE_APP_URL || '') + result.audioUrl,
+              audioUrl: baseUrl + result.audioUrl,
               audioFileName: result.audioFileName,
               splits: [],
               fullTranscript: null,
@@ -168,8 +195,15 @@ export default function UploadPage({ project, setProject }: { project: ProjectSt
           } else {
             // merging or extracting
             let msg = status === 'merging' ? 'Merging chunks...' : 'Extracting audio...';
-            if (status === 'extracting' && procProgress === 0 && statusRes.data.timemark) {
-              msg += ` (Processed: ${statusRes.data.timemark})`;
+            if (status === 'extracting' && procProgress === 0) {
+              if (statusRes.data.timemark) {
+                msg += ` (Processed: ${statusRes.data.timemark})`;
+              } else if (statusRes.data.targetSize) {
+                msg += ` (Extracted: ${Math.round(statusRes.data.targetSize / 1024)} MB)`;
+              } else if (statusRes.data.stderr) {
+                const cleanStderr = statusRes.data.stderr.replace(/^frame=.*$/, 'Processing frames...').substring(0, 40);
+                msg += ` (${cleanStderr}...)`;
+              }
             }
             setStatusMessage(msg);
             setProgress(procProgress || 0);

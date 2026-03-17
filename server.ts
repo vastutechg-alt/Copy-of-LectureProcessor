@@ -8,6 +8,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { GoogleGenAI, Type } from '@google/genai';
 import cors from 'cors';
+import ytdl from '@distube/ytdl-core';
 
 // Set ffmpeg path
 if (ffmpegStatic) {
@@ -54,15 +55,13 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 * 1024 } // 2GB limit
 });
 
-import ytdl from '@distube/ytdl-core';
-
 // In-memory status tracking for async processing
 const processingStatus = new Map<string, any>();
 
 // API Routes
 
 // 1. Upload Video Chunk
-app.post('/api/upload-chunk', upload.single('chunk'), (req, res) => {
+app.post('/api/upload-chunk', upload.single('chunk'), async (req, res) => {
   try {
     const { fileId, chunkIndex, originalName } = req.body;
     const chunkFile = req.file;
@@ -74,28 +73,14 @@ app.post('/api/upload-chunk', upload.single('chunk'), (req, res) => {
     const ext = path.extname(originalName || '');
     const finalVideoPath = path.join(VIDEOS_DIR, `${fileId}${ext}`);
 
-    // Append chunk to the final file using streams
-    const readStream = fs.createReadStream(chunkFile.path);
-    const writeStream = fs.createWriteStream(finalVideoPath, { flags: 'a' });
+    // Append chunk to the final file
+    const chunkData = await fs.promises.readFile(chunkFile.path);
+    await fs.promises.appendFile(finalVideoPath, chunkData);
     
-    readStream.pipe(writeStream);
-    
-    readStream.on('end', () => {
-      // Delete the temporary chunk file
-      fs.unlinkSync(chunkFile.path);
-      res.json({ status: 'success' });
-    });
-    
-    readStream.on('error', (err) => {
-      console.error('Stream read error:', err);
-      res.status(500).json({ error: 'Failed to process chunk' });
-    });
-    
-    writeStream.on('error', (err) => {
-      console.error('Stream write error:', err);
-      res.status(500).json({ error: 'Failed to process chunk' });
-    });
+    // Delete the temporary chunk file
+    await fs.promises.unlink(chunkFile.path);
 
+    res.json({ status: 'success' });
   } catch (error) {
     console.error('Chunk upload error:', error);
     res.status(500).json({ error: 'Failed to upload chunk' });
@@ -123,17 +108,18 @@ app.post('/api/start-processing', async (req, res) => {
     const audioPath = path.join(AUDIO_DIR, audioFileName);
 
     const command = ffmpeg(finalVideoPath)
-      .inputOptions([
-        '-analyzeduration', '100M',
-        '-probesize', '100M'
-      ])
       .outputOptions([
-        '-vn' // Disable video
+        '-vn', // Disable video
+        '-threads', '0' // Use all available cores for decoding
       ])
       .toFormat('mp3')
       .audioBitrate(bitrate || '128k')
       .on('start', (commandLine) => {
         console.log('Spawned Ffmpeg with command: ' + commandLine);
+      })
+      .on('stderr', (stderrLine) => {
+        const current = processingStatus.get(fileId) || {};
+        processingStatus.set(fileId, { ...current, status: 'extracting', stderr: stderrLine });
       })
       .on('progress', (progress) => {
         // progress.percent might be undefined or NaN for some formats (like .VOB or .TS)
@@ -143,10 +129,13 @@ app.post('/api/start-processing', async (req, res) => {
           percent = Math.round(progress.percent);
         }
         
+        const current = processingStatus.get(fileId) || {};
         processingStatus.set(fileId, { 
+          ...current,
           status: 'extracting', 
           progress: percent,
-          timemark: progress.timemark
+          timemark: progress.timemark,
+          targetSize: progress.targetSize
         });
       })
       .on('end', () => {
@@ -180,12 +169,12 @@ app.post('/api/start-processing', async (req, res) => {
 
     command.save(audioPath);
 
-    // Add a 10-minute timeout to prevent hanging on corrupted files
+    // Add a 30-minute timeout to prevent hanging on corrupted files
     const timeoutId = setTimeout(() => {
       console.error('FFmpeg processing timed out for file:', fileId);
       command.kill('SIGKILL');
       processingStatus.set(fileId, { status: 'error', error: 'Processing timed out. The file might be corrupted, unsupported, or missing an audio track.' });
-    }, 10 * 60 * 1000);
+    }, 30 * 60 * 1000);
 
   } catch (error: any) {
     console.error('Merge/Process error:', error);
@@ -250,17 +239,18 @@ app.post('/api/process-url', async (req, res) => {
     }
 
     const command = ffmpeg(input)
-      .inputOptions([
-        '-analyzeduration', '100M',
-        '-probesize', '100M'
-      ])
       .outputOptions([
-        '-vn'
+        '-vn',
+        '-threads', '0'
       ])
       .toFormat('mp3')
       .audioBitrate(bitrate || '128k')
       .on('start', (commandLine) => {
         console.log('Spawned Ffmpeg with command: ' + commandLine);
+      })
+      .on('stderr', (stderrLine) => {
+        const current = processingStatus.get(fileId) || {};
+        processingStatus.set(fileId, { ...current, status: 'extracting', stderr: stderrLine });
       })
       .on('progress', (progress) => {
         let percent = 0;
@@ -268,10 +258,13 @@ app.post('/api/process-url', async (req, res) => {
           percent = Math.round(progress.percent);
         }
         
+        const current = processingStatus.get(fileId) || {};
         processingStatus.set(fileId, { 
+          ...current,
           status: 'extracting', 
           progress: percent,
-          timemark: progress.timemark
+          timemark: progress.timemark,
+          targetSize: progress.targetSize
         });
       })
       .on('end', () => {
@@ -294,12 +287,12 @@ app.post('/api/process-url', async (req, res) => {
 
     command.save(audioPath);
 
-    // Add a 10-minute timeout to prevent hanging
+    // Add a 30-minute timeout to prevent hanging
     const timeoutId = setTimeout(() => {
-      console.error('FFmpeg processing timed out for URL:', fileId);
+      console.error('FFmpeg processing timed out for file:', fileId);
       command.kill('SIGKILL');
-      processingStatus.set(fileId, { status: 'error', error: 'Processing timed out. The URL stream might be corrupted or unsupported.' });
-    }, 10 * 60 * 1000);
+      processingStatus.set(fileId, { status: 'error', error: 'Processing timed out. The file might be too large or corrupted.' });
+    }, 30 * 60 * 1000);
   } catch (error: any) {
     console.error('URL Process error:', error);
     processingStatus.set(fileId, { status: 'error', error: error.message || 'Failed to process URL' });

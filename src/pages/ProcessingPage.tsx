@@ -22,14 +22,15 @@ export default function ProcessingPage({ project, setProject, apiKey }: { projec
     setIsSplitting(true);
     setError(null);
     try {
-      const response = await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/split-audio`, {
+      const baseUrl = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '');
+      const response = await axios.post(`${baseUrl}/api/split-audio`, {
         id: project.id,
         audioFileName: project.audioFileName
       });
       if (response.data.status === 'success') {
         const partsWithUrl = response.data.parts.map((p: any) => ({
           ...p,
-          url: (import.meta.env.VITE_APP_URL || '') + p.url
+          url: baseUrl + p.url
         }));
         setProject({ ...project, splits: partsWithUrl });
       }
@@ -52,7 +53,8 @@ export default function ProcessingPage({ project, setProject, apiKey }: { projec
       for (let i = 0; i < project.splits.length; i++) {
         const split = project.splits[i];
         if (!split.transcript) {
-          const response = await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/transcribe`, {
+          const baseUrl = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '');
+          const response = await axios.post(`${baseUrl}/api/transcribe`, {
             fileName: split.fileName,
             apiKey
           });
@@ -78,7 +80,8 @@ export default function ProcessingPage({ project, setProject, apiKey }: { projec
     setIsGeneratingQA(true);
     setError(null);
     try {
-      const response = await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/generate-qa`, {
+      const baseUrl = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '');
+      const response = await axios.post(`${baseUrl}/api/generate-qa`, {
         transcript: project.fullTranscript,
         style: qaStyle,
         count: qaCount,

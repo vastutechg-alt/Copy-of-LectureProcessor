@@ -16,7 +16,8 @@ export default function SettingsPage({ apiKey, saveApiKey }: { apiKey: string, s
     setIsTesting(true);
     setTestResult(null);
     try {
-      const response = await axios.post(`${import.meta.env.VITE_APP_URL || ''}/api/test-key`, { apiKey: inputKey });
+      const baseUrl = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '');
+      const response = await axios.post(`${baseUrl}/api/test-key`, { apiKey: inputKey });
       if (response.data.status === 'success') {
         setTestResult({ status: 'success', message: response.data.message });
       }
